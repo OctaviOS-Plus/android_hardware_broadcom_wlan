@@ -73,25 +73,28 @@ typedef enum {
 } DEBUG_SUB_COMMAND;
 
 typedef enum {
-    LOGGER_ATTRIBUTE_DRIVER_VER,
-    LOGGER_ATTRIBUTE_FW_VER,
-    LOGGER_ATTRIBUTE_RING_ID,
-    LOGGER_ATTRIBUTE_RING_NAME,
-    LOGGER_ATTRIBUTE_RING_FLAGS,
-    LOGGER_ATTRIBUTE_LOG_LEVEL,
-    LOGGER_ATTRIBUTE_LOG_TIME_INTVAL,
-    LOGGER_ATTRIBUTE_LOG_MIN_DATA_SIZE,
-    LOGGER_ATTRIBUTE_FW_DUMP_LEN,
-    LOGGER_ATTRIBUTE_FW_DUMP_DATA,
-    LOGGER_ATTRIBUTE_FW_ERR_CODE,
-    LOGGER_ATTRIBUTE_RING_DATA,
-    LOGGER_ATTRIBUTE_RING_STATUS,
-    LOGGER_ATTRIBUTE_RING_NUM,
-    LOGGER_ATTRIBUTE_DRIVER_DUMP_LEN,
-    LOGGER_ATTRIBUTE_DRIVER_DUMP_DATA,
-    LOGGER_ATTRIBUTE_PKT_FATE_NUM,
-    LOGGER_ATTRIBUTE_PKT_FATE_DATA,
-    LOGGER_ATTRIBUTE_HANG_REASON,
+    LOGGER_ATTRIBUTE_INVALID			= 0,
+    LOGGER_ATTRIBUTE_DRIVER_VER			= 1,
+    LOGGER_ATTRIBUTE_FW_VER			= 2,
+    LOGGER_ATTRIBUTE_RING_ID			= 3,
+    LOGGER_ATTRIBUTE_RING_NAME			= 4,
+    LOGGER_ATTRIBUTE_RING_FLAGS			= 5,
+    LOGGER_ATTRIBUTE_LOG_LEVEL			= 6,
+    LOGGER_ATTRIBUTE_LOG_TIME_INTVAL		= 7,
+    LOGGER_ATTRIBUTE_LOG_MIN_DATA_SIZE		= 8,
+    LOGGER_ATTRIBUTE_FW_DUMP_LEN		= 9,
+    LOGGER_ATTRIBUTE_FW_DUMP_DATA		= 10,
+    LOGGER_ATTRIBUTE_FW_ERR_CODE		= 11,
+    LOGGER_ATTRIBUTE_RING_DATA			= 12,
+    LOGGER_ATTRIBUTE_RING_STATUS		= 13,
+    LOGGER_ATTRIBUTE_RING_NUM			= 14,
+    LOGGER_ATTRIBUTE_DRIVER_DUMP_LEN		= 15,
+    LOGGER_ATTRIBUTE_DRIVER_DUMP_DATA		= 16,
+    LOGGER_ATTRIBUTE_PKT_FATE_NUM		= 17,
+    LOGGER_ATTRIBUTE_PKT_FATE_DATA		= 18,
+    LOGGER_ATTRIBUTE_HANG_REASON		= 19,
+    /* Add new attributes just above this */
+    LOGGER_ATTRIBUTE_MAX
 } LOGGER_ATTRIBUTE;
 
 typedef enum {
@@ -466,7 +469,7 @@ public:
                 void *data = reply.get_vendor_data();
                 int len = reply.get_vendor_data_len();
 
-                ALOGD("len = %d, expected len = %d", len, sizeof(unsigned int));
+                ALOGD("len = %d, expected len = %lu", len, sizeof(unsigned int));
                 memcpy(mSupport, data, sizeof(unsigned int));
                 break;
             }
@@ -797,7 +800,6 @@ public:
     }
 
     virtual int handleEvent(WifiEvent& event) {
-        wifi_ring_buffer_id ring_id;
         char *buffer = NULL;
         int buffer_size = 0;
         bool is_err_alert = false;
@@ -829,7 +831,7 @@ public:
                 }
             }
 
-            if(is_err_alert) {
+            if (is_err_alert) {
                 mBuffSize = sizeof(mErrCode);
                 if (mBuff) free(mBuff);
                 mBuff = (char *)malloc(mBuffSize);
@@ -999,6 +1001,7 @@ class HalInit : public WifiCommand
             ALOGE("Failed to register set hal start response; result = %d", result);
         }
         wifi_unregister_cmd(wifiHandle(), id());
+	ALOGV("Stop HAL Successfully Completed, mErrCode = %d\n", mErrCode);
         return result;
     }
 
@@ -1088,8 +1091,6 @@ wifi_error wifi_hal_preInit(wifi_interface_handle iface)
 
 wifi_error wifi_stop_hal(wifi_interface_handle iface)
 {
-    wifi_handle handle = getWifiHandle(iface);
-
     HalInit *cmd = new HalInit(iface, HAL_START_REQUEST_ID);
     NULL_CHECK_RETURN(cmd, "memory allocation failure", WIFI_ERROR_OUT_OF_MEMORY);
     cmd->cancel();
@@ -1426,7 +1427,7 @@ public:
         for (nl_iterator it(vendor_data); it.has_next(); it.next()) {
             if (it.get_type() == LOGGER_ATTRIBUTE_PKT_FATE_NUM) {
                 *mNoProvidedFates = it.get_u32();
-                ALOGI("No: of pkt fates provided is %d\n", *mNoProvidedFates);
+                ALOGI("No: of pkt fates provided is %zu\n", *mNoProvidedFates);
             } else {
                 ALOGE("Ignoring invalid attribute type = %d, size = %d\n",
                         it.get_type(), it.get_len());

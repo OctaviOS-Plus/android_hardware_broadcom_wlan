@@ -72,7 +72,6 @@
 #define POLL_DRIVER_MAX_TIME_MS (10000)
 #define EVENT_BUF_SIZE 2048
 
-static void internal_event_handler(wifi_handle handle, int events);
 static int internal_no_seq_check(nl_msg *msg, void *arg);
 static int internal_valid_message_handler(nl_msg *msg, void *arg);
 static int wifi_get_multicast_id(wifi_handle handle, const char *name, const char *group);
@@ -83,6 +82,8 @@ static wifi_error wifi_start_rssi_monitoring(wifi_request_id id, wifi_interface_
 static wifi_error wifi_stop_rssi_monitoring(wifi_request_id id, wifi_interface_handle iface);
 static wifi_error wifi_set_packet_filter(wifi_interface_handle handle,
                             const u8 *program, u32 len);
+static wifi_error wifi_read_packet_filter(wifi_interface_handle handle, u32 src_offset,
+                            u8 *host_dst, u32 length);
 static wifi_error wifi_get_packet_filter_capabilities(wifi_interface_handle handle,
                 u32 *version, u32 *max_len);
 static wifi_error wifi_configure_nd_offload(wifi_interface_handle iface, u8 enable);
@@ -97,14 +98,19 @@ typedef enum wifi_attr {
     ANDR_WIFI_ATTRIBUTE_TCPACK_SUP_VALUE,
     ANDR_WIFI_ATTRIBUTE_LATENCY_MODE,
     ANDR_WIFI_ATTRIBUTE_RANDOM_MAC,
-    ANDR_WIFI_ATTRIBUTE_TX_POWER_SCENARIO
+    ANDR_WIFI_ATTRIBUTE_TX_POWER_SCENARIO,
+    ANDR_WIFI_ATTRIBUTE_THERMAL_MITIGATION,
+    ANDR_WIFI_ATTRIBUTE_THERMAL_COMPLETION_WINDOW
     // Add more attribute here
 } wifi_attr_t;
 
 enum wifi_rssi_monitor_attr {
-    RSSI_MONITOR_ATTRIBUTE_MAX_RSSI,
-    RSSI_MONITOR_ATTRIBUTE_MIN_RSSI,
-    RSSI_MONITOR_ATTRIBUTE_START,
+    RSSI_MONITOR_ATTRIBUTE_INVALID	= 0,
+    RSSI_MONITOR_ATTRIBUTE_MAX_RSSI	= 1,
+    RSSI_MONITOR_ATTRIBUTE_MIN_RSSI	= 2,
+    RSSI_MONITOR_ATTRIBUTE_START	= 3,
+    // Add more attribute here
+    RSSI_MONITOR_ATTRIBUTE_MAX
 };
 
 enum wifi_apf_attr {
@@ -116,7 +122,22 @@ enum wifi_apf_attr {
 
 enum apf_request_type {
     GET_APF_CAPABILITIES,
-    SET_APF_PROGRAM
+    SET_APF_PROGRAM,
+    READ_APF_PROGRAM
+};
+
+enum wifi_dscp_attr {
+    DSCP_ATTRIBUTE_INVALID = 0,
+    DSCP_ATTRIBUTE_START = 1,
+    DSCP_ATTRIBUTE_END = 2,
+    DSCP_ATTRIBUTE_AC = 3,
+    /* Add more attributes here */
+    DSCP_ATTRIBUTE_MAX
+};
+
+enum wifi_dscp_request_type {
+    SET_DSCP_TABLE,
+    RESET_DSCP_TABLE
 };
 
 /* Initialize/Cleanup */
@@ -138,25 +159,11 @@ static nl_sock * wifi_create_nl_socket(int port)
 
     wifi_socket_set_local_port(sock, port);
 
-    struct sockaddr *addr = NULL;
-    // ALOGI("sizeof(sockaddr) = %d, sizeof(sockaddr_nl) = %d", sizeof(*addr), sizeof(*addr_nl));
-
-    // ALOGI("Connecting socket");
     if (nl_connect(sock, NETLINK_GENERIC)) {
         ALOGE("Could not connect handle");
         nl_socket_free(sock);
         return NULL;
     }
-
-    // ALOGI("Making socket nonblocking");
-    /*
-    if (nl_socket_set_nonblocking(sock)) {
-        ALOGE("Could make socket non-blocking");
-        nl_socket_free(sock);
-        return NULL;
-    }
-    */
-
     return sock;
 }
 
@@ -242,12 +249,13 @@ wifi_error init_wifi_vendor_hal_func_table(wifi_hal_fn *fn)
     fn->wifi_nan_data_indication_response = nan_data_indication_response;
     fn->wifi_nan_data_end = nan_data_end;
     fn->wifi_set_latency_mode = wifi_set_latency_mode;
-#ifdef NAN_CLUSTER_MERGE
-    fn->wifi_nan_enable_merge_request = nan_enable_cluster_merge_request;
-#endif /* NAN_CLUSTER_MERGE */
     fn->wifi_select_tx_power_scenario = wifi_select_tx_power_scenario;
     fn->wifi_reset_tx_power_scenario = wifi_reset_tx_power_scenario;
+    fn->wifi_read_packet_filter = wifi_read_packet_filter;
     fn->wifi_set_subsystem_restart_handler = wifi_set_subsystem_restart_handler;
+    fn->wifi_set_thermal_mitigation_mode = wifi_set_thermal_mitigation_mode;
+    fn->wifi_map_dscp_access_category = wifi_map_dscp_access_category;
+    fn->wifi_reset_dscp_mapping = wifi_reset_dscp_mapping;
 
     return WIFI_SUCCESS;
 }
@@ -417,15 +425,6 @@ wifi_error wifi_initialize(wifi_handle *handle)
             if (result != WIFI_SUCCESS) {
                 ALOGE("wifi_start_hal failed");
             }
-#ifdef FILE_DUMP
-            else {
-                ALOGE("Calling start file dump");
-                result = wifi_start_file_dump(wlan0Handle);
-                if (result != WIFI_SUCCESS) {
-                    ALOGE("wifi_start_file_dump failed");
-                }
-            }
-#endif /* FILE_DUMP */
         }
     } else {
         ALOGI("Not Calling set alert handler as global_iface is NULL");
@@ -529,13 +528,6 @@ void wifi_cleanup(wifi_handle handle, wifi_cleaned_up_handler handler)
             }
         }
 
-#ifdef FILE_DUMP
-        ALOGE("Calling stop file dump");
-        result = wifi_stop_file_dump(wlan0Handle);
-        if (result != WIFI_SUCCESS) {
-            ALOGE("wifi_stop_file_dump failed");
-        }
-#endif /* FILE_DUMP */
     } else {
         ALOGE("Not cleaning up hal as global_iface is NULL");
     }
@@ -560,6 +552,7 @@ void wifi_cleanup(wifi_handle handle, wifi_cleaned_up_handler handler)
         }
     }
     info->clean_up = true;
+    /* calling internal modules or cleanup */
     wifi_internal_module_cleanup();
     ALOGI("wifi nan internal clean up done");
     pthread_mutex_lock(&info->cb_lock);
@@ -722,8 +715,6 @@ static int internal_valid_message_handler(nl_msg *msg, void *arg)
     // ALOGV("event received %s, vendor_id = 0x%0x", event.get_cmdString(), vendor_id);
     // event.log();
 
-    bool dispatched = false;
-
     pthread_mutex_lock(&info->cb_lock);
 
     for (int i = 0; i < info->num_event_cb; i++) {
@@ -740,9 +731,6 @@ static int internal_valid_message_handler(nl_msg *msg, void *arg)
             nl_recvmsg_msg_cb_t cb_func = cbi->cb_func;
             void *cb_arg = cbi->cb_arg;
             WifiCommand *cmd = (WifiCommand *)cbi->cb_arg;
-            if (cmd != NULL) {
-                cmd->addRef();
-            }
             pthread_mutex_unlock(&info->cb_lock);
             if (cb_func)
                 (*cb_func)(msg, cb_arg);
@@ -795,7 +783,6 @@ public:
         // ALOGI("handling reponse in %s", __func__);
 
         struct nlattr **tb = reply.attributes();
-        struct genlmsghdr *gnlh = reply.header();
         struct nlattr *mcgrp = NULL;
         int i;
 
@@ -1070,6 +1057,7 @@ public:
 class AndroidPktFilterCommand : public WifiCommand {
     private:
         const u8* mProgram;
+        u8* mReadProgram;
         u32 mProgramLen;
         u32* mVersion;
         u32* mMaxLen;
@@ -1095,13 +1083,24 @@ class AndroidPktFilterCommand : public WifiCommand {
             mMaxLen = NULL;
         }
 
+        AndroidPktFilterCommand(wifi_interface_handle handle,
+            u8* host_dst, u32 length)
+            : WifiCommand("AndroidPktFilterCommand", handle, 0),
+                mReadProgram(host_dst), mProgramLen(length),
+                mReqType(READ_APF_PROGRAM)
+        {
+        }
+
     int createRequest(WifiRequest& request) {
         if (mReqType == SET_APF_PROGRAM) {
             ALOGI("\n%s: APF set program request\n", __FUNCTION__);
             return createSetPktFilterRequest(request);
         } else if (mReqType == GET_APF_CAPABILITIES) {
             ALOGI("\n%s: APF get capabilities request\n", __FUNCTION__);
-            return createGetPktFilterCapabilitesRequest(request);
+	    return createGetPktFilterCapabilitesRequest(request);
+        } else if (mReqType == READ_APF_PROGRAM) {
+            ALOGI("\n%s: APF read packet filter request\n", __FUNCTION__);
+            return createReadPktFilterRequest(request);
         } else {
             ALOGE("\n%s Unknown APF request\n", __FUNCTION__);
             return WIFI_ERROR_NOT_SUPPORTED;
@@ -1142,6 +1141,16 @@ exit:   request.attr_end(data);
         nlattr *data = request.attr_start(NL80211_ATTR_VENDOR_DATA);
         request.attr_end(data);
         return result;
+    }
+
+    int createReadPktFilterRequest(WifiRequest& request) {
+        int result = request.create(GOOGLE_OUI, APF_SUBCMD_READ_FILTER);
+            if (result < 0) {
+                return result;
+            }
+            nlattr *data = request.attr_start(NL80211_ATTR_VENDOR_DATA);
+            request.attr_end(data);
+            return result;
     }
 
     int start() {
@@ -1198,6 +1207,18 @@ exit:   request.attr_end(data);
                 } else {
                     ALOGE("Ignoring invalid attribute type = %d, size = %d",
                             it.get_type(), it.get_len());
+                }
+            }
+        } else if (mReqType == READ_APF_PROGRAM) {
+            ALOGD("Read packet filter, mProgramLen = %d\n", mProgramLen);
+            for (nl_iterator it(vendor_data); it.has_next(); it.next()) {
+                if (it.get_type() == APF_ATTRIBUTE_PROGRAM) {
+                    u8 *buffer = NULL;
+                    buffer = (u8 *)it.get_data();
+                    memcpy(mReadProgram, buffer, mProgramLen);
+                } else if (it.get_type() == APF_ATTRIBUTE_PROGRAM_LEN) {
+                    int apf_length = it.get_u32();
+                    ALOGD("apf program length = %d\n", apf_length);
                 }
             }
         }
@@ -1563,7 +1584,6 @@ static wifi_error wifi_stop_rssi_monitoring(wifi_request_id id, wifi_interface_h
     if(id == -1) {
         wifi_rssi_event_handler handler;
         s8 max_rssi = 0, min_rssi = 0;
-        wifi_handle handle = getWifiHandle(iface);
         memset(&handler, 0, sizeof(handler));
         SetRSSIMonitorCommand *cmd = new SetRSSIMonitorCommand(id, iface,
                                                     max_rssi, min_rssi, handler);
@@ -1600,6 +1620,19 @@ static wifi_error wifi_set_packet_filter(wifi_interface_handle handle,
     return result;
 }
 
+static wifi_error wifi_read_packet_filter(wifi_interface_handle handle,
+    u32 src_offset, u8 *host_dst, u32 length)
+{
+    ALOGD("Read APF program, halHandle = %p, length = %d\n", handle, length);
+    AndroidPktFilterCommand *cmd = new AndroidPktFilterCommand(handle, host_dst, length);
+    NULL_CHECK_RETURN(cmd, "memory allocation failure", WIFI_ERROR_OUT_OF_MEMORY);
+    wifi_error result = (wifi_error)cmd->start();
+    if (result == WIFI_SUCCESS) {
+        ALOGI("Read APF program success\n");
+    }
+    cmd->releaseRef();
+    return result;
+}
 static wifi_error wifi_configure_nd_offload(wifi_interface_handle handle, u8 enable)
 {
     SetNdoffloadCommand command(handle, enable);
@@ -1688,6 +1721,245 @@ wifi_error wifi_reset_tx_power_scenario(wifi_interface_handle handle)
     ALOGE("wifi_reset_tx_power_scenario");
     TxPowerScenario command(handle);
     return (wifi_error)command.start(scenario);
+}
+
+/////////////////////////////////////////////////////////////////////////////
+
+class ThermalMitigation : public WifiCommand {
+private:
+    wifi_thermal_mode mMitigation;
+    u32 mCompletionWindow;
+public:
+    // constructor for thermal mitigation setting
+    ThermalMitigation(wifi_interface_handle handle,
+		    wifi_thermal_mode mitigation, u32 completion_window)
+    : WifiCommand("ThermalMitigation", handle, 0)
+    {
+        mMitigation = mitigation;
+		mCompletionWindow = completion_window;
+    }
+
+    int createRequest(WifiRequest& request, int subcmd,
+		    wifi_thermal_mode mitigation, u32 completion_window) {
+        int result = request.create(GOOGLE_OUI, subcmd);
+        if (result < 0) {
+            return result;
+        }
+
+        if ((mitigation < WIFI_MITIGATION_NONE) ||
+           (mitigation > WIFI_MITIGATION_EMERGENCY)) {
+            ALOGE("Unsupported tx mitigation value:%d\n", mitigation);
+            return WIFI_ERROR_NOT_SUPPORTED;
+        }
+
+        nlattr *data = request.attr_start(NL80211_ATTR_VENDOR_DATA);
+        result = request.put_s8(ANDR_WIFI_ATTRIBUTE_THERMAL_MITIGATION, mitigation);
+        if (result < 0) {
+            ALOGE("Failed to put tx power scenario request; result = %d", result);
+            return result;
+        }
+        result = request.put_u32(ANDR_WIFI_ATTRIBUTE_THERMAL_COMPLETION_WINDOW,
+		       	completion_window);
+        if (result < 0) {
+            ALOGE("Failed to put tx power scenario request; result = %d", result);
+            return result;
+        }
+
+        request.attr_end(data);
+        return WIFI_SUCCESS;
+    }
+
+    int start() {
+        WifiRequest request(familyId(), ifaceId());
+        int result = createRequest(request, WIFI_SUBCMD_THERMAL_MITIGATION, mMitigation,
+		       	mCompletionWindow);
+        if (result != WIFI_SUCCESS) {
+            ALOGE("failed to create request; result = %d", result);
+            return result;
+        }
+
+        ALOGD("try to get resp; mitigation=%d, delay=%d", mMitigation, mCompletionWindow);
+        result = requestResponse(request);
+        if (result != WIFI_SUCCESS) {
+            ALOGE("failed to send thermal mitigation; result = %d", result);
+        }
+        return result;
+    }
+protected:
+    virtual int handleResponse(WifiEvent& reply) {
+        ALOGD("Request complete!");
+        /* Nothing to do on response! */
+        return NL_SKIP;
+    }
+};
+
+wifi_error wifi_set_thermal_mitigation_mode(wifi_handle handle,
+                                            wifi_thermal_mode mode,
+                                            u32 completion_window)
+{
+    int numIfaceHandles = 0;
+    wifi_interface_handle *ifaceHandles = NULL;
+    wifi_interface_handle wlan0Handle;
+
+    wlan0Handle = wifi_get_wlan_interface((wifi_handle)handle, ifaceHandles, numIfaceHandles);
+    ThermalMitigation command(wlan0Handle, mode, completion_window);
+    return (wifi_error)command.start();
+}
+
+/////////////////////////////////////////////////////////////////////////////
+class DscpCommand : public WifiCommand {
+    private:
+	u32 mStart;
+	u32 mEnd;
+	u32 mAc;
+        int mReqType;
+    public:
+        DscpCommand(wifi_interface_handle handle,
+                u32 start, u32 end, u32 ac)
+            : WifiCommand("DscpCommand", handle, 0),
+                    mStart(start), mEnd(end), mAc(ac),
+                    mReqType(SET_DSCP_TABLE)
+        {
+        }
+
+        DscpCommand(wifi_interface_handle handle)
+            : WifiCommand("DscpCommand", handle, 0),
+                    mReqType(RESET_DSCP_TABLE)
+        {
+        }
+
+    int createRequest(WifiRequest& request) {
+        if (mReqType == SET_DSCP_TABLE) {
+            ALOGI("\n%s: DSCP set table request\n", __FUNCTION__);
+            return createSetDscpRequest(request);
+        } else if (mReqType == RESET_DSCP_TABLE) {
+            ALOGI("\n%s: DSCP reset table request\n", __FUNCTION__);
+            return createResetDscpRequest(request);
+        } else {
+            ALOGE("\n%s Unknown DSCP request\n", __FUNCTION__);
+            return WIFI_ERROR_NOT_SUPPORTED;
+        }
+        return WIFI_SUCCESS;
+    }
+
+    int createSetDscpRequest(WifiRequest& request) {
+        int result = request.create(GOOGLE_OUI, DSCP_SUBCMD_SET_TABLE);
+        if (result < 0) {
+            return result;
+        }
+
+        nlattr *data = request.attr_start(NL80211_ATTR_VENDOR_DATA);
+        result = request.put_u32(DSCP_ATTRIBUTE_START, mStart);
+        if (result < 0) {
+            goto exit;
+        }
+        result = request.put_u32(DSCP_ATTRIBUTE_END, mEnd);
+        if (result < 0) {
+            goto exit;
+        }
+        result = request.put_u32(DSCP_ATTRIBUTE_AC, mAc);
+        if (result < 0) {
+            goto exit;
+        }
+        request.attr_end(data);
+exit:
+        return result;
+    }
+
+    int createResetDscpRequest(WifiRequest& request) {
+        int result = request.create(GOOGLE_OUI, DSCP_SUBCMD_RESET_TABLE);
+        if (result < 0) {
+            return result;
+        }
+
+        nlattr *data = request.attr_start(NL80211_ATTR_VENDOR_DATA);
+        request.attr_end(data);
+        return result;
+    }
+
+    int start() {
+        WifiRequest request(familyId(), ifaceId());
+        int result = createRequest(request);
+        if (result < 0) {
+            return result;
+        }
+        result = requestResponse(request);
+        if (result < 0) {
+            ALOGI("Request Response failed for DSCP, result = %d", result);
+            return result;
+        }
+        return result;
+    }
+
+    int handleResponse(WifiEvent& reply) {
+        ALOGD("In DscpCommand::handleResponse");
+
+        if (reply.get_cmd() != NL80211_CMD_VENDOR) {
+            ALOGD("Ignoring reply with cmd = %d", reply.get_cmd());
+            return NL_SKIP;
+        }
+
+        nlattr *vendor_data = reply.get_attribute(NL80211_ATTR_VENDOR_DATA);
+        int len = reply.get_vendor_data_len();
+
+        if (vendor_data == NULL || len == 0) {
+            ALOGE("no vendor data in DscpCommand response; ignoring it");
+            return NL_SKIP;
+        }
+        if( mReqType == SET_DSCP_TABLE) {
+            ALOGD("Response recieved for Set DSCP command\n");
+        } else if (mReqType == RESET_DSCP_TABLE) {
+            ALOGD("Response recieved for Reset DSCP command\n");
+        }
+        return NL_OK;
+    }
+
+    int handleEvent(WifiEvent& event) {
+        /* No Event to recieve for DSCP commands */
+        ALOGD("DSCP command %s\n", __FUNCTION__);
+        return NL_SKIP;
+    }
+};
+
+wifi_error wifi_map_dscp_access_category(wifi_handle handle,
+        u32 start, u32 end, u32 ac)
+{
+    int numIfaceHandles = 0;
+    wifi_interface_handle *ifaceHandles = NULL;
+    wifi_interface_handle wlan0Handle;
+
+    wlan0Handle = wifi_get_wlan_interface((wifi_handle)handle, ifaceHandles, numIfaceHandles);
+
+    DscpCommand *cmd = new DscpCommand(wlan0Handle, start, end, ac);
+    NULL_CHECK_RETURN(cmd, "memory allocation failure", WIFI_ERROR_OUT_OF_MEMORY);
+    wifi_error result = (wifi_error)cmd->start();
+    if (result == WIFI_SUCCESS) {
+        ALOGI("Mapping DSCP table success\n");
+    } else {
+        ALOGE("Mapping DSCP table fail\n");
+    }
+    cmd->releaseRef();
+    return result;
+}
+
+wifi_error wifi_reset_dscp_mapping(wifi_handle handle)
+{
+    int numIfaceHandles = 0;
+    wifi_interface_handle *ifaceHandles = NULL;
+    wifi_interface_handle wlan0Handle;
+
+    wlan0Handle = wifi_get_wlan_interface((wifi_handle)handle, ifaceHandles, numIfaceHandles);
+
+    DscpCommand *cmd = new DscpCommand(wlan0Handle);
+    NULL_CHECK_RETURN(cmd, "memory allocation failure", WIFI_ERROR_OUT_OF_MEMORY);
+    wifi_error result = (wifi_error)cmd->start();
+    if (result == WIFI_SUCCESS) {
+        ALOGI("Resetting DSCP table success\n");
+    } else {
+        ALOGE("Resetting DSCP table fail\n");
+    }
+    cmd->releaseRef();
+    return result;
 }
 
 /////////////////////////////////////////////////////////////////////////////
