@@ -127,10 +127,10 @@ enum apf_request_type {
 };
 
 enum wifi_dscp_attr {
-    DSCP_ATTRIBUTE_INVALID = 0,
-    DSCP_ATTRIBUTE_START = 1,
-    DSCP_ATTRIBUTE_END = 2,
-    DSCP_ATTRIBUTE_AC = 3,
+    DSCP_ATTRIBUTE_INVALID	= 0,
+    DSCP_ATTRIBUTE_START	= 1,
+    DSCP_ATTRIBUTE_END		= 2,
+    DSCP_ATTRIBUTE_AC		= 3,
     /* Add more attributes here */
     DSCP_ATTRIBUTE_MAX
 };
@@ -731,6 +731,9 @@ static int internal_valid_message_handler(nl_msg *msg, void *arg)
             nl_recvmsg_msg_cb_t cb_func = cbi->cb_func;
             void *cb_arg = cbi->cb_arg;
             WifiCommand *cmd = (WifiCommand *)cbi->cb_arg;
+            if (cmd != NULL) {
+                cmd->addRef();
+            }
             pthread_mutex_unlock(&info->cb_lock);
             if (cb_func)
                 (*cb_func)(msg, cb_arg);
