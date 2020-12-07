@@ -55,6 +55,7 @@ const uint32_t BRCM_OUI =  0x001018;
 #define NMRSTR "%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x"
 #define NAN_MASTER_RANK_LEN 8
 
+#define SAR_CONFIG_SCENARIO_COUNT      100
 
 /*
  This enum defines ranges for various commands; commands themselves
@@ -253,6 +254,7 @@ typedef struct {
     wifi_handle handle;                             // handle to wifi data
     char name[IFNAMSIZ+1];                          // interface name + trailing null
     int  id;                                        // id to use when talking to driver
+    bool is_virtual;                                // mark each iface as virtual or static
 } interface_info;
 
 typedef struct {
@@ -279,6 +281,7 @@ typedef struct {
 
     interface_info **interfaces;                    // array of interfaces
     int num_interfaces;                             // number of interfaces
+    int max_num_interfaces;                         // max number of interfaces
 
 
     // add other details
@@ -345,6 +348,9 @@ wifi_error wifi_hal_preInit(wifi_interface_handle iface);
 /* API to get wake reason statistics */
 wifi_error wifi_get_wake_reason_stats(wifi_interface_handle handle,
         WLAN_DRIVER_WAKE_REASON_CNT *wifi_wake_reason_cnt);
+wifi_error wifi_virtual_interface_create(wifi_handle handle, const char* ifname,
+        wifi_interface_type iface_type);
+wifi_error wifi_virtual_interface_delete(wifi_handle handle, const char* ifname);
 void set_hautil_mode(bool halutil_mode);
 bool get_halutil_mode();
 
