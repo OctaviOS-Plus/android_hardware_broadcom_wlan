@@ -36,7 +36,7 @@
 #include <ctype.h>
 #include <errno.h>
 
-#include <hardware_legacy/wifi_hal.h>
+#include "wifi_hal.h"
 #include "common.h"
 #include "cpp_bindings.h"
 

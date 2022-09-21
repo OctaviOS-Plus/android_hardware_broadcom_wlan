@@ -16,7 +16,7 @@
  * limitations under the License.
  */
 
-#include <hardware_legacy/wifi_hal.h>
+#include "wifi_hal.h"
 
 #ifndef __WIFI_HAL_COMMON_H__
 #define __WIFI_HAL_COMMON_H__
