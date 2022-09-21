@@ -40,13 +40,13 @@
 
 #include <utils/Log.h>
 #include <log/log.h>
-#include "wifi_hal.h"
+#include <hardware_legacy/wifi_hal.h>
 #include "common.h"
 #include "cpp_bindings.h"
 #include "netinet/in.h"
 #include "arpa/inet.h"
 #include <openssl/sha.h>
-#include <openssl/evp.h> 
+#include <openssl/evp.h>
 #include <sys/ioctl.h>
 
 /* Changes between incompatible Version of NAN */
@@ -4413,7 +4413,8 @@ wifi_error nan_disable_request(transaction_id id,
         ALOGE("Disable NAN MAC transId= %d\n", id);
         mac_prim->setId(id);
     } else {
-        ALOGE("Invalid transId= %d cur= %d\n", id, mac_prim->getId());
+        ALOGE("Invalid transId= %d cur= %d\n", id,
+              mac_prim ? mac_prim->getId() : -1);
     }
 
     cmd->setChreNan(0);
