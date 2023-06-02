@@ -45,7 +45,7 @@
 
 #include <log/log.h>
 
-#include "wifi_hal.h"
+#include <hardware_legacy/wifi_hal.h>
 #include "common.h"
 #include "cpp_bindings.h"
 #include <sys/stat.h>
@@ -1079,7 +1079,7 @@ public:
             unregisterVendorHandler(GOOGLE_OUI, GOOGLE_DEBUG_RING_EVENT);
             ALOGV("Hal preInit Failed to put pid= %d", result);
             return result;
-        } 
+        }
 
         request.attr_end(data);
 
