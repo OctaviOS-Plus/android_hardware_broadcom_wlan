@@ -56,10 +56,13 @@ const uint32_t BRCM_OUI =  0x001018;
 #define NMRSTR "%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x"
 #define NAN_MASTER_RANK_LEN 8
 #define NAN_SCID_INFO_LEN   16
+#define NAN_MAX_NDP_PEER 8u
+#define NAN_MAX_NDP_COUNT_SIZE NAN_MAX_NDP_PEER * sizeof(NanDataPathId)
 
 #define SAR_CONFIG_SCENARIO_COUNT      100
 #define MAX_NUM_RADIOS 3
 #define MAX_CMD_RESP_BUF_LEN 8192
+#define MAX_MLO_LINK 3
 
 /*
  This enum defines ranges for various commands; commands themselves
